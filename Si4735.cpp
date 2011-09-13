@@ -1,6 +1,7 @@
 /* Arduino Si4735 Library
  * Written by Ryan Owens for SparkFun Electronics
  * 5/17/11
+ * Altered by Wagner Sartori Junior <wsartori@gmail.com> on 09/13/11
  *
  * This library is for use with the SparkFun Si4735 Shield
  * Released under the 'Buy Me a Beer' license
@@ -17,9 +18,17 @@
 
 //This is just a constructor.
 Si4735::Si4735(){
-	//Do Nothing
+	clearRDS();
+	_ab = 0;
 }
 
+void Si4735::clearRDS(void) {
+	byte i = 0;
+	for (i=0; i<64; i++) _disp[i] = ' ';
+	for (i=0; i<8; i++) _ps[i] = ' ';
+	_disp[64] = '\0';
+	_ps[8] = '\0';
+}
 
 void Si4735::begin(char mode){
 	_mode = mode;
@@ -54,7 +63,8 @@ void Si4735::begin(char mode){
 	digitalWrite(SS, HIGH);	
 
 	//Configure the SPI hardware
-	SPCR = (1<<SPE)|(1<<MSTR);	//Enable SPI HW, Master Mode	
+	SPIClass::begin();
+	SPIClass::setClockDivider(SPI_CLOCK_DIV32);
 	
 	//Send the POWER_UP command
 	switch(_mode){
@@ -79,6 +89,11 @@ void Si4735::begin(char mode){
 
 	//Disable Mute
 	sprintf(command, "%c%c%c%c%c%c", 0x12, 0x00, 0x40, 0x01, 0x00, 0x00);
+	sendCommand(command, 6);
+	delay(1);
+
+	//Enable RDS
+	sprintf(command, "%c%c%c%c%c%c", 0x12, 0x00, 0x15, 0x02, 0x00, 0x01);
 	sendCommand(command, 6);
 	delay(1);
 
@@ -136,6 +151,8 @@ void Si4735::sendCommand(char * myCommand){
 *			False if tune was unsuccessful
 */
 bool Si4735::tuneFrequency(int frequency){
+	clearRDS();
+	
 	//Split the desired frequency into two character for use in the
 	//set frequency command.
 	char highByte = frequency >> 8;
@@ -143,13 +160,17 @@ bool Si4735::tuneFrequency(int frequency){
 	
 	//Depending on the current mode, set the new frequency.
 	switch(_mode){
+		// page 21 of AN332
 		case FM:
-			sprintf(command, "%c%c%c%c", 0x20, 0x00, highByte, lowByte);
+			sprintf(command, "%c%c%c%c%c", 0x20, 0x00, highByte, lowByte, 0x00);
 			break;
+		// page 135 of AN332
 		case AM:
-		case SW:
 		case LW:
-			sprintf(command, "%c%c%c%c", 0x40, 0x00, highByte, lowByte);
+			sprintf(command, "%c%c%c%c%c%c", 0x40, 0x00, highByte, lowByte, 0x00, 0x00);
+			break;
+		case SW:
+			sprintf(command, "%c%c%c%c%c%c", 0x40, 0x00, highByte, lowByte, 0x00, 0xff);
 			break;
 		default:
 			break;
@@ -160,12 +181,64 @@ bool Si4735::tuneFrequency(int frequency){
 	return true;
 }
 
-//This function does not work yet!
-int Si4735::getFrequency(void){
-	return 0;
+int Si4735::getFrequency(bool &valid){
+	char response [16];
+	int frequency;	
+	byte upper_byte;
+	byte lower_byte;
+
+	switch(_mode){
+		case FM:			
+			//The FM_TUNE_STATUS command
+			sprintf(command, "%c%c", 0x22, 0x00);
+			break;
+		case AM:
+		case SW:
+		case LW:
+			//The AM_TUNE_STATUS command
+			sprintf(command, "%c%c", 0x42, 0x00);			
+			break;
+		default:
+			break;
+	}	
+	
+	//Send the command
+	sendCommand(command, 2);
+
+	//Now read the response	
+	getResponse(response);	
+
+	//Convert the bytes of the response to a frequency value
+	//NOTE: the data type "char" is an 8-bit signed element
+	//Thus to preform the math properly we must reinterpret the 8-bits
+	//as an 8-bit unsigned integer value on both the lower and upper byte
+	//Please note, this is not performing the 1's or 2's complement
+	//This is litterly trying to re-represent the bits stored
+	//Example:
+	//	Suppose response[2]=char(-42)
+	// we want to re-represent the 8-bits that represent the signed value (-42)
+	// such that is becomes the unsigned value (214)
+	upper_byte=(((response[2]>>7)/(-1))<<7)+(response[2]&127);
+	lower_byte=(((response[3]>>7)/(-1))<<7)+(response[3]&127);
+	frequency = (upper_byte<<8)+lower_byte;
+	//frequency = MAKEINT(response[2], response[3]);
+
+	//Check to see if the Si4735 is currently "busy"
+	//Bit 0 is "STCINT" which indicates Seek/Tune Complete
+	//If set (HIGH), it indicates that the Seek/Tune process has finished
+	//In other words, when set, the TUNE_STATUS frequency values are valid
+	//This is useful for us since we can determine if we are still seeking;
+	//if we are in the middle of seeking, we will set "valid" LOW to indicate
+	//that the frequency that was returned is not the final frequency and that
+	//we must re-execute getFrequency()	
+	valid=(response[0]&1)==1;
+
+	return frequency;
 }
 
 bool Si4735::seekUp(void){
+	clearRDS();
+	
 	//Use the current mode selection to seek up.
 	switch(_mode){
 		case FM:
@@ -186,6 +259,8 @@ bool Si4735::seekUp(void){
 }
 
 bool Si4735::seekDown(void){
+	clearRDS();
+	
 	//Use the current mode selection to seek down.
 	switch(_mode){
 		case FM:
@@ -203,6 +278,132 @@ bool Si4735::seekDown(void){
 	}
 	delay(1);
 	return true;
+}
+
+void Si4735::readRDS(void){
+	char status;
+	char response [16];
+	
+	sprintf(command, "%c%c", 0x24, 0x00);
+	sendCommand(command, 2);
+
+	//Now read the response	
+	getResponse(response);
+	
+	//response[4] = RDSA high BLOCK1
+	//response[5] = RDSA low
+	//response[6] = RDSB high BLOCK2
+	//response[7] = RDSB low
+	//response[8] = RDSC high BLOCK3
+	//response[9] = RDSC low
+	//response[10] = RDSD high BLOCK4
+	//response[11] = RDSD low
+	byte type;
+	bool version;
+	bool tp;
+	int pi;
+	
+	type = (response[6]>>4) & 0xF;
+	version = bitRead(response[6], 4);
+	tp = bitRead(response[6], 5);
+	if (version == 0) {
+		pi = MAKEINT(response[4], response[5]);
+	} else {
+		pi = MAKEINT(response[8], response[9]);
+	}
+	
+	/*
+	Serial.println("================================");
+	Serial.print("Type:|");
+	Serial.print(type, DEC);
+	Serial.println("|");
+	Serial.print("Version:|");
+	Serial.print(version, BIN);
+	Serial.println("|");
+	Serial.print("TP:|");
+	Serial.print(tp, BIN);
+	Serial.println("|");
+	Serial.print("PI:|");
+	Serial.print(pi, BIN);
+	Serial.println("|");
+	*/
+	
+	// Groups 0A & 0B
+	// Basic tuning and switching information only
+	if (type == 0) {
+		bool ta = bitRead(response[7], 4);
+		bool ms = bitRead(response[7], 3);
+		byte addr = response[7] & 3;
+		bool diInfo = bitRead(response[7], 2);
+		
+		// Groups 0A & 0B: to extract PS segment we need blocks 1 and 3
+		if (addr >= 0 && addr<= 3) {
+			if (response[10] != '\0')
+				_ps[addr*2] = response[10];
+			if (response[11] != '\0')
+				_ps[addr*2+1] = response[11];
+		}
+		
+		/*
+		Serial.print("TA:|");
+		Serial.print(ta, BIN);
+		Serial.println("|");
+		Serial.print("MS:|");
+		Serial.print(ms, BIN);
+		Serial.println("|");
+		Serial.print("Addr:|");
+		Serial.print(addr, DEC);
+		Serial.println("|");
+		Serial.print("diInfo:|");
+		Serial.print(diInfo, BIN);
+		Serial.println("|");
+		Serial.print("_ps:|");
+		Serial.print(_ps);
+		Serial.println("|");
+		Serial.print("_af:|");
+		Serial.print(_af, DEC);
+		Serial.println("|");
+		*/
+	}
+	// Groups 2A & 2B
+	else if (type == 2) {
+		// Get their address
+		int addressRT = response[7] & B1111; // Get rightmost 4 bits
+		bool ab = bitRead(response[7], 4);
+		
+		if (version == 0) {
+			if (addressRT >= 0 && addressRT <= 15) {
+				if (response[8] != '\0')
+					_disp[addressRT*4] = response[8];
+				if (response[9] != '\0')
+					_disp[addressRT*4+1] = response[9];
+				if (response[10] != '\0')
+					_disp[addressRT*4+2] = response[10]; 
+				if (response[11] != '\0')
+				_disp[addressRT*4+3] = response[11];
+			}
+		} else {
+			if (addressRT >= 0 && addressRT <= 7) {
+				if (response[10] != '\0')
+					_disp[addressRT*2] = response[10];
+				if (response[11] != '\0')
+					_disp[addressRT*2+1] = response[11];
+			}
+		}
+		if (ab != _ab) {
+			for (byte i=0; i<64; i++) _disp[i] = ' ';
+			_disp[64] = '\0';
+		}
+		_ab = ab;
+		//Serial.println(_disp);
+	}
+	
+	delay(40);
+}
+
+void Si4735::getRDS(char * ps, char * radiotext) {
+	strcpy(ps, _ps);
+	strcpy(radiotext, _disp);
 }
 
 void Si4735::volumeUp(void){
@@ -227,6 +428,23 @@ void Si4735::volumeDown(void){
 	}
 }
 
+void Si4735::setVolume(byte volume) {
+	sprintf(command, "%c%c%c%c%c%c", 0x12, 0x00, 0x40, 0x00, 0x00, volume);
+	sendCommand(command, 6);
+}
+
+byte Si4735::getVolume() {
+	char response [16];
+	byte volume;
+	
+	sprintf(command, "%c%c%c%c", 0x13, 0x00, 0x40, 0x00);
+	sendCommand(command, 4);
+	
+	getResponse(response);
+	
+	return response[3];
+}
+
 void Si4735::mute(void){
 	//Disable Mute
 	sprintf(command, "%c%c%c%c%c%c", 0x12, 0x00, 0x40, 0x01, 0x00, 0x03);
@@ -246,15 +464,20 @@ char Si4735::getStatus(void){
 	digitalWrite(SS, LOW);
 	delay(1);
 	spiTransfer(0xA0);  //Set up to read a single byte
+	delay(1);
 	response = spiTransfer(0x00);  //Get the commands response
 	digitalWrite(SS, HIGH);
 	return response;
 }
+
 void Si4735::getResponse(char * response){
 	digitalWrite(SS, LOW);
 	delay(1);
 	spiTransfer(0xE0);  //Set up to read the long response
-	for(int i=0; i<16; i++)*response++ = spiTransfer(0x00);  //Assign the response to the string.
+	delay(1);
+	for(int i=0; i<16; i++) {
+		*response++ = spiTransfer(0x00);  //Assign the response to the string.
+	}
 	digitalWrite(SS, HIGH);
 }
 
@@ -275,14 +498,19 @@ char Si4735::spiTransfer(char value){
 	{
 	};
 	return SPDR;                    // return the received byte
+	//return SPIClass::transfer(value);
 }
 
 void Si4735::sendCommand(char * command, int length){
   digitalWrite(SS, LOW);
   delay(1);
   spiTransfer(0x48);  //Contrl byte to write an SPI command (now send 8 bytes)
-  for(int i=0; i<length; i++)spiTransfer(command[i]);
-  for(int i=length; i<8; i++)spiTransfer(0x00);  //Fill the rest of the command arguments with 0
+  for(int i=0; i<length; i++) {
+	spiTransfer(command[i]);
+  }
+  for(int i=length; i<8; i++) {
+	spiTransfer(0x00);  //Fill the rest of the command arguments with 0
+  }
   digitalWrite(SS, HIGH);  //End the sequence
 }
 

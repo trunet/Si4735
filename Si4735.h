@@ -1,6 +1,7 @@
 /* Arduino Si4735 Library
  * Written by Ryan Owens for SparkFun Electronics
  * 5/17/11
+ * Altered by Wagner Sartori Junior <wsartori@gmail.com> on 09/13/11
  *
  * This library is for use with the SparkFun Si4735 Shield
  * Released under the 'Buy Me a Beer' license
@@ -13,6 +14,7 @@
 #define Si4735_h
 
 #include "WProgram.h"
+#include "SPI.h"
 
 //Assign the radio pin numbers
 #define POWER_PIN	8
@@ -34,7 +36,9 @@
 #define ON	true
 #define OFF	false
 
-class Si4735
+#define MAKEINT(msb, lsb) (((msb) << 8) | (lsb))
+
+class Si4735 : public SPIClass
 {
 	public:
 		//This is just a constructor.
@@ -79,7 +83,7 @@ class Si4735
 		* TODO:
 		*	Make this function work.
 		*/
-		int getFrequency(void);
+		int getFrequency(bool &valid);
 		/*
 		* Description:
 		*	Commands the radio to seek up to the next valid channel. If the top of the band is reached, the seek
@@ -100,6 +104,9 @@ class Si4735
 		*	Make the function return true if a valid channel was found, else return false.
 		*/		
 		bool seekDown(void);
+		
+		void readRDS(void);
+		void getRDS(char * ps, char * radiotext);
 		/*
 		* Description:
 		*	Increasese the volume by 1. If the maximum volume has been reached, no increase will take place.
@@ -110,6 +117,9 @@ class Si4735
 		*	Decreases the volume by 1. If the minimum volume has been reached, no decrease will take place.
 		*/
 		void volumeDown(void);
+		
+		void setVolume(byte volume);
+		byte getVolume();
 		/*
 		* Description:
 		*	Mutes the audio output
@@ -141,6 +151,9 @@ class Si4735
 		void end(void);
 		
 	private:
+		char _disp[65]; // Radio Text
+		char _ps[9]; // Program service name
+		bool _ab; // Detect new radiotext
 		/*
 		* A variable that is assigned the current mode of the radio (AM, FM, SW or LW)
 		*/
@@ -173,6 +186,7 @@ class Si4735
 		*/
 		char spiTransfer(char value);
 		
+		void clearRDS(void);
 };
 
 #endif
