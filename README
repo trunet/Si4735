@@ -1,0 +1,11 @@
+Arduino Si4735 Library
+Written by Ryan Owens for SparkFun Electronics - 5/17/11
+Altered by Wagner Sartori Junior <wsartori@gmail.com> on 09/13/11
+
+This library is for use with the SparkFun Si4735 Shield
+Released under the 'Buy Me a Beer' license
+(If we ever meet, you buy me a beer)
+
+See the example sketches to learn how to use the library in your code.
+
+For the reading commands work, you'll need to add a diode between GPO1 and pin 12. It's an easy task there're some pictures on my wiki page.
